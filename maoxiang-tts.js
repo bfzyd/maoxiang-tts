@@ -1,14 +1,14 @@
 // ============================================================
-// 猫箱 TTS - Cloudflare Workers (固定 vivi 2.0)
-// 环境变量：
-//   API_KEY (secret)  调用鉴权，Bearer token 或 ?key=
+// 猫箱 TTS - Cloudflare Workers
+// 温柔桃子音色 / 45+ 情感标签适配
+// 环境变量：API_KEY (secret)
 // ============================================================
 
 const APPKEY = "WQuVLKMGRo";
 const UPSTREAM_HOST = "audio5-normal-hl.myparallelstory.com";
 
-// 默认音色：VV vivi 2.0
-const DEFAULT_VOICE = "zh_female_vv_uranus_bigtts";
+// 锁定音色：温柔桃子
+const DEFAULT_VOICE = "zh_female_wenroutaozi_uranus_bigtts";
 const BASE_PROMPT = "我们正在做爱，你的声音娇喘带着哭腔";
 
 const CONFIG = {
@@ -18,30 +18,54 @@ const CONFIG = {
   sampleRate: 24000,
 };
 
+// ============================================================
+// 情感标签映射表（对应前端 TTS 协议 v5.0 全套标签）
+// ============================================================
 const EMOTION_MAP = {
-  advertising: "广告", angry: "生气", coldness: "冷漠", comfort: "安慰",
-  depressed: "沮丧", entertainment: "娱乐", excited: "兴奋", fear: "恐惧",
-  happy: "开心", hate: "厌恶", "lovey-dovey": "撒娇", neutral: "中性",
-  news: "新闻", sad: "悲伤", shy: "害羞", surprised: "惊讶",
-  tender: "温柔", tension: "紧张",
+  // 1. 核心情感
+  happy: "开心", sad: "悲伤", angry: "生气", surprised: "惊讶",
+  fear: "恐惧", hate: "厌恶", neutral: "中性", excited: "激动",
+
+  // 2. 细腻正向
+  gentle: "温柔", shy: "害羞", coquettish: "撒娇", teasing: "调侃",
+  doting: "宠溺", sympathetic: "同情", grateful: "感激", expectant: "期待",
+  playful: "调皮", relaxed: "放松", lazy: "慵懒",
+
+  // 3. 细腻负面
+  wronged: "委屈", disappointed: "失望", jealous: "嫉妒", envious: "羡慕",
+  nervous: "紧张", serious: "严肃",
+
+  // 4. 中性与冲突
+  confused: "疑惑", hesitant: "犹豫", firm: "坚定", arrogant: "傲慢",
+  humble: "谦卑", sarcastic: "嘲讽", contemptuous: "轻蔑",
+
+  // 5. 极致 / 用户定义
+  tender: "深情", "lovey-dovey": "粘人", depressed: "沮丧", guilt: "愧疚",
+  pain: "痛苦", coldness: "冷漠", shout: "咆哮", crazy: "病娇",
+  whispering: "耳边语", breath: "娇喘", hum: "轻哼",
+
+  // 兼容旧标签
+  advertising: "广告", comfort: "安慰", entertainment: "娱乐",
+  news: "新闻", tension: "紧张",
 };
 
 // ============================================================
 // 入口
 // ============================================================
-
 export default {
   async fetch(req, env) {
     if (req.method === "OPTIONS") return corsPreflight();
 
     const url = new URL(req.url);
 
+    // 健康检查（不鉴权）
     if (url.pathname === "/" && req.method === "GET") {
-      return new Response("猫箱 TTS Worker (vivi 2.0) is running.\n", {
+      return new Response("猫箱 TTS Worker (温柔桃子) is running.\n", {
         headers: { "Content-Type": "text/plain;charset=utf-8", ...corsHeaders() },
       });
     }
 
+    // 鉴权
     if (!authOk(req, env)) {
       return jsonError("无效的 API 密钥", 401, "invalid_api_key");
     }
@@ -68,7 +92,6 @@ export default {
 // ============================================================
 // 鉴权
 // ============================================================
-
 function authOk(req, env) {
   if (!env.API_KEY) return true;
   const auth = req.headers.get("authorization") || "";
@@ -78,26 +101,27 @@ function authOk(req, env) {
 }
 
 // ============================================================
-// OpenAI 兼容：POST /v1/audio/speech
+// OpenAI 兼容端点：POST /v1/audio/speech
 // ============================================================
-
 async function handleSpeech(req) {
   let body;
-  try { body = await req.json(); } catch {
+  try {
+    body = await req.json();
+  } catch {
     return jsonError("请求体不是合法 JSON", 400, "invalid_request_error");
   }
-  if (!body.input) return jsonError("'input' 是必需参数", 400, "invalid_request_error");
+  if (!body.input) {
+    return jsonError("'input' 是必需参数", 400, "invalid_request_error");
+  }
 
   const speed = clamp(Number(body.speed) || 1.0, 0.5, 2.0);
   const pitchRatio = clamp(Number(body.pitch) || 1.0, 0.5, 1.5);
-  const rate = Math.round(speed * 50);
-  const pitch = Math.round((pitchRatio - 1.0) * 50 + 50);
 
   return await runRequest({
     text: String(body.input),
-    voice: normalizeVoice(body.voice),
-    rate: clamp(rate, 0, 100),
-    pitch: clamp(pitch, 0, 100),
+    voice: DEFAULT_VOICE,
+    rate: clamp(Math.round(speed * 50), 0, 100),
+    pitch: clamp(Math.round((pitchRatio - 1.0) * 50 + 50), 0, 100),
     volume: clamp(Number(body.volume) || 50, 0, 100),
     format: normalizeFormat(body.response_format || "mp3"),
     sampleRate: Number(body.sampleRate) || CONFIG.sampleRate,
@@ -109,20 +133,23 @@ async function handleSpeech(req) {
 }
 
 // ============================================================
-// 原生：POST /tts
+// 原生端点：POST /tts
 // ============================================================
-
 async function handleNative(req) {
   let body;
-  try { body = await req.json(); } catch {
+  try {
+    body = await req.json();
+  } catch {
     return jsonError("请求体不是合法 JSON", 400, "invalid_request_error");
   }
   const text = String(body.text || body.input || "");
-  if (!text) return jsonError("'text' 是必需参数", 400, "invalid_request_error");
+  if (!text) {
+    return jsonError("'text' 是必需参数", 400, "invalid_request_error");
+  }
 
   return await runRequest({
     text,
-    voice: normalizeVoice(body.voice),
+    voice: DEFAULT_VOICE,
     rate: clamp(Number(body.rate ?? 50), 0, 100),
     pitch: clamp(Number(body.pitch ?? 50), 0, 100),
     volume: clamp(Number(body.volume ?? 50), 0, 100),
@@ -135,11 +162,6 @@ async function handleNative(req) {
   }, !!body.stream);
 }
 
-// 强制固定音色，忽略客户端传的
-function normalizeVoice(_ignored) {
-  return DEFAULT_VOICE;
-}
-
 function normalizeFormat(f) {
   const v = String(f).toLowerCase();
   return (v === "pcm" || v === "wav") ? "pcm" : "mp3";
@@ -148,14 +170,16 @@ function normalizeFormat(f) {
 // ============================================================
 // 执行合成
 // ============================================================
-
 async function runRequest(job, stream) {
   const parsed = parseText(job.text);
-  if (!parsed.text) return jsonError("清理后无可合成文本", 400, "invalid_request_error");
+  if (!parsed.text) {
+    return jsonError("清理后无可合成文本", 400, "invalid_request_error");
+  }
 
   job.text = parsed.text;
   if (parsed.emotion) job.emotion = parsed.emotion;
 
+  // 流式（仅 mp3）
   if (stream && job.format === "mp3") {
     const { readable, writable } = new TransformStream();
     const writer = writable.getWriter();
@@ -172,6 +196,7 @@ async function runRequest(job, stream) {
     });
   }
 
+  // 非流式
   try {
     const audio = await runSynth(job, null);
     const ct = job.format === "pcm" ? "audio/wav" : "audio/mpeg";
@@ -190,27 +215,31 @@ async function runRequest(job, stream) {
 }
 
 // ============================================================
-// 文本解析：只处理 [emotion]，不再有角色字母
+// 文本解析：提取首个 [emotion] 标签并移除标签
 // ============================================================
-
 function parseText(raw) {
   let text = String(raw || "");
+
+  // 提取首个 [emotion] 标签
   let emotion = "";
   const m = /\[\s*([A-Za-z\-]+)\s*\]/.exec(text);
   if (m) emotion = m[1].toLowerCase();
+
+  // 移除所有 [emotion] 标签，只留纯台词
   text = text.replace(/\[\s*([A-Za-z\-]+)\s*\]\s*/g, "");
+
+  // 叠标点压缩
   text = text.replace(/([—\-~_.。…!！?？])\1+/g, "$1$1");
+
   return { text: text.trim(), emotion };
 }
 
 // ============================================================
 // WebSocket 合成
 // ============================================================
-
 function runSynth(job, onChunk) {
   return new Promise(async (resolve, reject) => {
-    const wsUrl =
-      `wss://${UPSTREAM_HOST}/internal/api/v1/ws?ssmix=&aid=${genId()}&device_id=${genId()}`;
+    const wsUrl = `wss://${UPSTREAM_HOST}/internal/api/v1/ws?ssmix=&aid=${genId()}&device_id=${genId()}`;
     const fetchUrl = wsUrl.replace(/^wss:\/\//, "https://");
 
     let resp;
@@ -221,7 +250,11 @@ function runSynth(job, onChunk) {
     }
     const ws = resp.webSocket;
     if (!ws) return reject(new Error("WebSocket 升级失败"));
-    try { ws.accept(); } catch (e) { return reject(new Error("accept 失败: " + e.message)); }
+    try {
+      ws.accept();
+    } catch (e) {
+      return reject(new Error("accept 失败: " + e.message));
+    }
 
     const chunks = [];
     let total = 0;
@@ -240,18 +273,23 @@ function runSynth(job, onChunk) {
       cleanup();
       if (err) return reject(err);
       if (total === 0) return reject(new Error("无音频数据"));
-      try { resolve(buildAudio(chunks, total, job)); }
-      catch (e) { reject(e); }
+      try {
+        resolve(buildAudio(chunks, total, job));
+      } catch (e) {
+        reject(e);
+      }
     };
 
+    // 首包 12s 超时
     const firstChunkTimer = setTimeout(() => {
       if (!settled && total === 0) finish(new Error("首包超时"));
     }, CONFIG.firstChunkTimeoutMs);
 
+    // 中途断流 6s → 残卷组装
     const watchdog = setInterval(() => {
       if (settled) return;
       if (total > 0 && Date.now() - lastDataTime > CONFIG.midStreamTimeoutMs) {
-        finish(); // 残卷组装，无错误
+        finish();
       }
     }, 1000);
 
@@ -259,20 +297,24 @@ function runSynth(job, onChunk) {
       if (settled) return;
       const d = ev.data;
 
+      // 文本帧
       if (typeof d === "string") {
         let msg;
         try { msg = JSON.parse(d); } catch { return; }
 
+        // type=3 是 base64 音频
         if (msg.type === 3 && msg.buffer) {
           let bytes;
           try { bytes = b64ToBytes(msg.buffer); } catch (_) { return; }
           if (!bytes.length) return;
-          chunks.push(bytes); total += bytes.length;
+          chunks.push(bytes);
+          total += bytes.length;
           lastDataTime = Date.now();
           if (onChunk) try { await onChunk(bytes); } catch (_) {}
           return;
         }
 
+        // 控制消息
         const event = msg.event || "";
         if (event === "TaskStarted") {
           try {
@@ -298,13 +340,16 @@ function runSynth(job, onChunk) {
         return;
       }
 
+      // 二进制帧
       let bytes;
       if (d instanceof ArrayBuffer) bytes = new Uint8Array(d);
       else if (d instanceof Uint8Array) bytes = d;
       else if (d && d.buffer) bytes = new Uint8Array(d.buffer);
       else return;
+
       if (!bytes.length) return;
-      chunks.push(bytes); total += bytes.length;
+      chunks.push(bytes);
+      total += bytes.length;
       lastDataTime = Date.now();
       if (onChunk) try { await onChunk(bytes); } catch (_) {}
     });
@@ -312,6 +357,7 @@ function runSynth(job, onChunk) {
     ws.addEventListener("close", () => finish());
     ws.addEventListener("error", () => finish(new Error("WebSocket 错误")));
 
+    // 发送 StartTask
     try {
       ws.send(JSON.stringify({
         appkey: APPKEY,
@@ -329,12 +375,12 @@ function runSynth(job, onChunk) {
 // ============================================================
 // StartTask payload
 // ============================================================
-
 function buildPayload(job) {
   const speechRateFactor = clamp(job.rate / 50, 0.5, 2.0);
   const pitchValue = clamp(Math.round((job.pitch - 50) / 10), -5, 5);
   const loudnessRate = clamp(job.volume - 50, -50, 100);
 
+  // context_texts：情感标签优先，其次用户自定义
   let finalContext = BASE_PROMPT;
   if (job.emotion) {
     const cn = EMOTION_MAP[job.emotion] || job.emotion;
@@ -364,10 +410,10 @@ function buildPayload(job) {
 // ============================================================
 // 音频拼接
 // ============================================================
-
 function buildAudio(chunks, total, job) {
   if (job.format === "mp3") return concat(chunks, total);
 
+  // pcm → 包 WAV 头 + 前后 100ms 静音
   const silenceBytes = alignEven(Math.floor(job.sampleRate * 2 * CONFIG.silenceMs / 1000));
   const silence = new Uint8Array(silenceBytes);
   const pcm = concat(chunks, total);
@@ -384,27 +430,36 @@ function buildAudio(chunks, total, job) {
 function concat(chunks, total) {
   const out = new Uint8Array(total);
   let off = 0;
-  for (const c of chunks) { out.set(c, off); off += c.length; }
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
   return out;
 }
 
 function writeWavHeader(u8, dataLength, sr) {
   const dv = new DataView(u8.buffer);
-  const str = (o, s) => { for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i)); };
+  const str = (o, s) => {
+    for (let i = 0; i < s.length; i++) dv.setUint8(o + i, s.charCodeAt(i));
+  };
   str(0, "RIFF");
   dv.setUint32(4, 36 + dataLength, true);
-  str(8, "WAVE"); str(12, "fmt ");
+  str(8, "WAVE");
+  str(12, "fmt ");
   dv.setUint32(16, 16, true);
-  dv.setUint16(20, 1, true); dv.setUint16(22, 1, true);
-  dv.setUint32(24, sr, true); dv.setUint32(28, sr * 2, true);
-  dv.setUint16(32, 2, true); dv.setUint16(34, 16, true);
-  str(36, "data"); dv.setUint32(40, dataLength, true);
+  dv.setUint16(20, 1, true);   // PCM
+  dv.setUint16(22, 1, true);   // mono
+  dv.setUint32(24, sr, true);
+  dv.setUint32(28, sr * 2, true);
+  dv.setUint16(32, 2, true);
+  dv.setUint16(34, 16, true);
+  str(36, "data");
+  dv.setUint32(40, dataLength, true);
 }
 
 // ============================================================
 // 其它
 // ============================================================
-
 function handleModels() {
   return jsonResponse({
     object: "list",
@@ -412,9 +467,17 @@ function handleModels() {
   });
 }
 
-function genId() { return String(Math.floor(1e12 + 9e12 * Math.random())); }
-function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
-function alignEven(n) { return n % 2 ? n + 1 : n; }
+function genId() {
+  return String(Math.floor(1e12 + 9e12 * Math.random()));
+}
+
+function clamp(v, lo, hi) {
+  return Math.max(lo, Math.min(hi, v));
+}
+
+function alignEven(n) {
+  return n % 2 ? n + 1 : n;
+}
 
 function b64ToBytes(s) {
   const bin = atob(s);
