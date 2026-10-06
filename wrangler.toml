@@ -1,6 +1,6 @@
 # wrangler.toml
 name = "maoxiang-tts"          # Worker 名称（可自定义）
-main = "maoxiang-tts.js"               # 入口文件相对于仓库根目录的路径
+main = "mao-tts.js"               # 入口文件相对于仓库根目录的路径
 compatibility_date = "2025-01-01"     # 兼容性日期（使用当前或未来日期）
 
 # 观察模式（可选）
